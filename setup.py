@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='pdf-diff',
-      version='0.9.0',
+      version='0.9.1',
       description='Finds differences between two PDF documents',
       url='https://github.com/JoshData/pdf-diff',
       author=u'Joshua Tauberer',
