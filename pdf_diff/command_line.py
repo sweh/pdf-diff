@@ -100,7 +100,7 @@ def mark_eol_hyphen(box):
 
 def perform_diff(doc1text, doc2text):
     import diff_match_patch
-    return diff_match_patch.diff(
+    return diff_match_patch.diff_unicode(
         doc1text,
         doc2text,
         timelimit=0,
@@ -426,37 +426,3 @@ def pdftopng(pdffile, pagenumber, width=900):
     pngbytes = subprocess.check_output(["pdftoppm", "-f", str(pagenumber), "-l", str(pagenumber), "-scale-to", str(width), "-png", pdffile])
     im = Image.open(io.BytesIO(pngbytes))
     return im.convert("RGBA")
-
-def main():
-    if len(sys.argv) == 2 and sys.argv[1] == "--changes":
-        # to just do the rendering part
-        render_changes(json.load(sys.stdin), sys.stdout.buffer)
-        sys.exit(0)
-
-    if len(sys.argv) <= 1:
-        print("Usage: python3 pdf-diff.py [--style box|strike|underline,box|strike|underline] before.pdf after.pdf > changes.png", file=sys.stderr)
-        sys.exit(1)
-
-    args = sys.argv[1:]
-
-    styles = ["strike", "underline"]
-    top_margin = 0
-    while True:
-        if args[0] == "--style":
-            args.pop(0)
-            styles = args.pop(0).split(',')
-            continue
-        if args[0] == "--top-margin":
-            args.pop(0)
-            top_margin = float(args.pop(0))
-            continue
-        break
-
-    left_file = args.pop(0)
-    right_file = args.pop(0)
-
-    changes = compute_changes(left_file, right_file, top_margin=top_margin)
-    render_changes(changes, styles, sys.stdout.buffer)
-
-if __name__ == "__main__":
-    main()
