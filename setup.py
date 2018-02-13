@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-setup(name='pdf-diff',
+setup(name='pdf-diff3',
       version='0.9.2.dev0',
       description='Finds differences between two PDF documents',
       url='https://github.com/JoshData/pdf-diff',
@@ -13,7 +13,7 @@ setup(name='pdf-diff',
           'lxml',
           'pillow',
       ],
-      entry_points = {
+      entry_points={
         'console_scripts': ['pdf-diff=pdf_diff.command_line:main'],
       },
       zip_safe=False)
