@@ -1,12 +1,17 @@
 #!/usr/bin/python3
 
-import sys, json, subprocess, io, os
+import sys
+
+if sys.version_info[0] < 3:
+    sys.exit("ERROR: Python version 3+ is required.")
+
+import json, subprocess, io, os
 from lxml import etree
 from PIL import Image, ImageDraw, ImageOps
 
-def compute_changes(pdf_fn_1, pdf_fn_2, top_margin=0):
+def compute_changes(pdf_fn_1, pdf_fn_2, top_margin=0, bottom_margin=100):
     # Serialize the text in the two PDFs.
-    docs = [serialize_pdf(0, pdf_fn_1, top_margin), serialize_pdf(1, pdf_fn_2, top_margin)]
+    docs = [serialize_pdf(0, pdf_fn_1, top_margin, bottom_margin), serialize_pdf(1, pdf_fn_2, top_margin, bottom_margin)]
 
     # Compute differences between the serialized text.
     diff = perform_diff(docs[0][1], docs[1][1])
@@ -14,8 +19,8 @@ def compute_changes(pdf_fn_1, pdf_fn_2, top_margin=0):
 
     return changes
 
-def serialize_pdf(i, fn, top_margin):
-    box_generator = pdf_to_bboxes(i, fn, top_margin)
+def serialize_pdf(i, fn, top_margin, bottom_margin):
+    box_generator = pdf_to_bboxes(i, fn, top_margin, bottom_margin)
     box_generator = mark_eol_hyphens(box_generator)
 
     boxes = []
@@ -45,7 +50,7 @@ def serialize_pdf(i, fn, top_margin):
     text = "".join(text)
     return boxes, text
 
-def pdf_to_bboxes(pdf_index, fn, top_margin=0):
+def pdf_to_bboxes(pdf_index, fn, top_margin=0, bottom_margin=100):
     # Get the bounding boxes of text runs in the PDF.
     # Each text run is returned as a dict.
     box_index = 0
@@ -54,7 +59,15 @@ def pdf_to_bboxes(pdf_index, fn, top_margin=0):
         "file": fn,
     }
     xml = subprocess.check_output(["pdftotext", "-bbox", fn, "/dev/stdout"])
-    dom = etree.fromstring(xml)
+
+    # This avoids PCDATA errors
+    codes_to_avoid = [ 0, 1, 2, 3, 4, 5, 6, 7, 8,
+                       11, 12,
+                       14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, ]
+
+    cleaned_xml = bytes([x for x in xml if x not in codes_to_avoid])
+
+    dom = etree.fromstring(cleaned_xml)
     for i, page in enumerate(dom.findall(".//{http://www.w3.org/1999/xhtml}page")):
         pagedict = {
             "number": i+1,
@@ -63,6 +76,8 @@ def pdf_to_bboxes(pdf_index, fn, top_margin=0):
         }
         for word in page.findall("{http://www.w3.org/1999/xhtml}word"):
             if float(word.get("yMax")) < (top_margin/100.0)*float(page.get("height")):
+                continue
+            if float(word.get("yMin")) > (bottom_margin/100.0)*float(page.get("height")):
                 continue
 
             yield {
@@ -100,7 +115,7 @@ def mark_eol_hyphen(box):
 
 def perform_diff(doc1text, doc2text):
     import diff_match_patch
-    return diff_match_patch.diff_unicode(
+    return diff_match_patch.diff(
         doc1text,
         doc2text,
         timelimit=0,
@@ -165,8 +180,8 @@ def mark_difference(hunk_length, offset, boxes, changes):
     # there's no reason to hold onto it. It can't be marked as changed twice.
     changes.append(boxes.pop(0))
 
-# Turns a JSON object of PDF changes into a PNG and writes it to stream.
-def render_changes(changes, styles, stream):
+# Turns a JSON object of PDF changes into a PIL image object.
+def render_changes(changes, styles):
     # Merge sequential boxes to avoid sequential disjoint rectangles.
 
     changes = simplify_changes(changes)
@@ -209,10 +224,7 @@ def render_changes(changes, styles, stream):
 
     img = stack_pages(page_groups)
 
-    # Write it out.
-
-    img.save(stream, "PNG")
-
+    return img
 
 def make_pages_images(changes):
     pages = [{}, {}]
@@ -426,3 +438,60 @@ def pdftopng(pdffile, pagenumber, width=900):
     pngbytes = subprocess.check_output(["pdftoppm", "-f", str(pagenumber), "-l", str(pagenumber), "-scale-to", str(width), "-png", pdffile])
     im = Image.open(io.BytesIO(pngbytes))
     return im.convert("RGBA")
+
+def main():
+    import argparse
+
+    description = ('Calculates the differences between two specified files in PDF format '
+                   '(or changes specified on standard input) and outputs to standard output '
+                   'side-by-side images with the differences marked (in PNG format).')
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument('files', nargs='*', # Use '*' to allow --changes with zero files
+                        help='calculate differences between the two named files')
+    parser.add_argument('-c', '--changes', action='store_true', default=False, 
+                        help='read change description from standard input, ignoring files')
+    parser.add_argument('-s', '--style', metavar='box|strike|underline,box|stroke|underline', 
+                        default='strike,underline',
+                        help='how to mark the differences in the two files (default: strike, underline)')
+    parser.add_argument('-f', '--format', choices=['png','gif','jpeg','ppm','tiff'], default='png',
+                        help='output format in which to render (default: png)')
+    parser.add_argument('-t', '--top-margin', metavar='margin', default=0., type=float,
+                        help='top margin (ignored area) end in percent of page height (default 0.0)')
+    parser.add_argument('-b', '--bottom-margin', metavar='margin', default=100., type=float,
+                        help='bottom margin (ignored area) begin in percent of page height (default 100.0)')
+    args = parser.parse_args()
+
+    def invalid_usage(msg):
+        sys.stderr.write('ERROR: %s%s' % (msg, os.linesep))
+        parser.print_usage(sys.stderr)
+        sys.exit(1)
+
+    # Validate style
+    style = args.style.split(',')
+    if len(style) != 2:
+        invalid_usage('Exactly two style values must be specified, if --style is used.')
+    for i in [0,1]:
+        if style[i] != 'box' and style[i] != 'strike' and style[i] != 'underline':
+            invalid_usage('--style values must be box, strike or underline, not "%s".' % (style[i]))
+
+    # Ensure one of files or --changes are specified
+    if len(args.files) == 0 and not args.changes:
+        invalid_usage('Please specify files to compare, or use --changes option.')
+
+    if args.changes:
+        # to just do the rendering part
+        img = render_changes(json.load(sys.stdin), style)
+        img.save(sys.stdout.buffer, args.format.upper())
+        sys.exit(0)
+
+    # Ensure enough file are specified
+    if len(args.files) != 2:
+        invalid_usage('Insufficient number of files to compare; please supply exactly 2.')
+
+    changes = compute_changes(args.files[0], args.files[1], top_margin=float(args.top_margin), bottom_margin=float(args.bottom_margin))
+    img = render_changes(changes, style)
+    img.save(sys.stdout.buffer, args.format.upper())
+
+
+if __name__ == "__main__":
+    main()
